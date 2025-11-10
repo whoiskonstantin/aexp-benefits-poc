@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 📚 Documentation
+
+Comprehensive documentation is available in the `doc/` folder:
+
+- **[doc/README.md](doc/README.md)** - Start here for documentation overview
+- **[doc/INDEX.md](doc/INDEX.md)** - Navigation guide organized by role
+- **[doc/TESTING.md](doc/TESTING.md)** - Testing procedures with curl commands
+- **[doc/API.md](doc/API.md)** - API endpoint documentation
+- **[doc/IMPLEMENTATION_PROGRESS.md](doc/IMPLEMENTATION_PROGRESS.md)** - Current status
+- **[doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)** - System design
+- **[doc/DATABASE.md](doc/DATABASE.md)** - Database configuration
+- **[doc/ROADMAP.md](doc/ROADMAP.md)** - Development roadmap
+- **[doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)** - Deployment guide
+- **[doc/FEATURES.md](doc/FEATURES.md)** - Feature descriptions
+
 ## Project Overview
 
 **aexp-benefits-poc** is a proof of concept web application for an American Express benefits platform. This is a early-stage Next.js 16 project using modern React patterns (React 19, App Router, Server Components by default). The project is currently in scaffolding phase with only the default Next.js starter template.
