@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Page {
+  id        Int      @id @default(autoincrement())
+  url       String   @unique
+  title     String
+  crawledAt DateTime @default(now())
+  chunks    Chunk[]
+
+  @@map("pages")
+}
+
+model Chunk {
+  id        Int      @id @default(autoincrement())
+  pageId    Int
+  text      String
+  embedding String?
+  category  String
+  sourceUrl String   @db.VarChar(2048)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId])
+  @@index([category])
+  @@map("chunks")
+}
+
+model AdminLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  status    String
+  message   String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+  @@map("admin_logs")
+}
