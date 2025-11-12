@@ -70,9 +70,16 @@ export async function searchChunks(
     })
 
     // Sort by similarity and take top K
-    let searchResults = resultsWithSimilarity
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, topK)
+    const sortedResults = resultsWithSimilarity.sort((a, b) => b.similarity - a.similarity)
+
+    // Debug logging: Show top 10 similarity scores
+    console.log(`Top ${Math.min(10, sortedResults.length)} similarity scores:`)
+    sortedResults.slice(0, 10).forEach((r, i) => {
+      const preview = r.text.substring(0, 80).replace(/\n/g, ' ')
+      console.log(`  ${i + 1}. [${r.similarity.toFixed(3)}] ${preview}...`)
+    })
+
+    let searchResults = sortedResults.slice(0, topK)
 
     // FALLBACK: If no results or very low similarity, return all chunks as fallback
     // This is for demo/testing purposes - production should use proper pgvector setup

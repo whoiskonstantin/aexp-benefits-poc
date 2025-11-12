@@ -12,11 +12,12 @@ export interface TextChunk {
   sourceUrl: string
 }
 
-// Approximate tokens per word (1 token ≈ 0.75 words)
-const TOKENS_PER_WORD = 0.75
-const MAX_CHUNK_TOKENS = 512
-const MAX_CHUNK_WORDS = Math.floor(MAX_CHUNK_TOKENS / TOKENS_PER_WORD) // ~682 words
-const CHUNK_OVERLAP_WORDS = 50 // Overlap between chunks for context
+// Chunk configuration for optimal semantic search
+// 250 words ≈ 187 tokens (better for focused semantic matching)
+// Previous: 682 words was too large, diluting semantic meaning
+const MAX_CHUNK_WORDS = 250 // Reduced from 682 for better semantic matching
+const CHUNK_OVERLAP_WORDS = 75 // Increased from 50 to preserve more context
+const TOKENS_PER_WORD = 0.75 // Approximate tokens per word (1 token ≈ 0.75 words)
 
 /**
  * Extract category from URL path

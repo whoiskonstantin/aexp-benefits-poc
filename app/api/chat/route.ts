@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
-import { searchChunks, calculateAverageSearchSimilarity } from '@/lib/search'
+import { searchChunks, calculateAverageSearchSimilarity, filterByThreshold } from '@/lib/search'
 import { generateResponse, formatResponseForAPI, validateResponseCitations } from '@/lib/response-generator'
 import prisma from '@/lib/prisma'
 
@@ -37,16 +37,27 @@ export async function POST(request: NextRequest) {
 
     console.log(`Chat request: ${message}`)
 
-    // Step 1: Search for relevant chunks
-    const searchResults = await searchChunks(message, 5)
+    // Step 1: Search for relevant chunks (retrieve more candidates)
+    const allResults = await searchChunks(message, 10)
 
-    // Step 2: Calculate confidence based on search results
-    const confidence = calculateAverageSearchSimilarity(searchResults)
+    // Step 2: Filter by similarity threshold to remove noise
+    const filteredResults = filterByThreshold(allResults, 0.5)
 
-    // Step 3: Generate response using LLM
+    // Step 3: Take top 5 after filtering
+    const searchResults = filteredResults.slice(0, 5)
+
+    // Step 4: Calculate confidence using MAXIMUM similarity (not average)
+    // This prevents good matches from being hidden by poor average
+    const confidence = searchResults.length > 0
+      ? Math.max(...searchResults.map(r => r.similarity))
+      : 0
+
+    console.log(`Using ${searchResults.length} chunks (filtered from ${allResults.length}) with max similarity: ${confidence.toFixed(3)}`)
+
+    // Step 5: Generate response using LLM
     const response = await generateResponse(message, searchResults, confidence)
 
-    // Step 4: Validate response quality
+    // Step 6: Validate response quality
     if (!validateResponseCitations(response)) {
       console.warn('Response may be missing proper citations')
     }
