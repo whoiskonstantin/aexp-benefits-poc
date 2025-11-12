@@ -45,3 +45,31 @@ model AdminLog {
   @@index([action])
   @@map("admin_logs")
 }
+
+model CrawlSession {
+  id              Int              @id @default(autoincrement())
+  startedAt       DateTime         @default(now())
+  completedAt     DateTime?
+  status          String           // 'in_progress', 'completed', 'failed'
+  pagesScraped    Int              @default(0)
+  navigationSteps NavigationStep[]
+
+  @@index([startedAt])
+  @@map("crawl_sessions")
+}
+
+model NavigationStep {
+  id              Int          @id @default(autoincrement())
+  crawlSessionId  Int
+  url             String       @db.VarChar(2048)
+  depth           Int
+  parentUrl       String?      @db.VarChar(2048)
+  linkText        String?
+  visitedAt       DateTime     @default(now())
+  scraped         Boolean      @default(false)
+  crawlSession    CrawlSession @relation(fields: [crawlSessionId], references: [id], onDelete: Cascade)
+
+  @@index([crawlSessionId])
+  @@index([depth])
+  @@map("navigation_steps")
+}

@@ -8,27 +8,30 @@ export interface ScrapedPage {
   headings: string[]
 }
 
+export interface NavigationStep {
+  url: string
+  depth: number
+  parentUrl: string | null
+  linkText: string | null
+  visitedAt: Date
+  scraped: boolean
+}
+
+export interface CrawlResult {
+  pages: ScrapedPage[]
+  navigationSteps: NavigationStep[]
+}
+
 // Environment configuration
 const AMEX_BENEFITS_URL = process.env.AMEX_BENEFITS_URL || 'https://www.americanexpress.com/en-us/colleagues/benefits'
 const PLAYWRIGHT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS !== 'false'
 const SCRAPER_TIMEOUT = parseInt(process.env.SCRAPER_TIMEOUT || '60000', 10)
 const SCRAPER_MAX_RETRIES = parseInt(process.env.SCRAPER_MAX_RETRIES || '3', 10)
+const MAX_PAGES_TO_CRAWL = parseInt(process.env.MAX_PAGES_TO_CRAWL || '20', 10)
 
 // Rate limiting configuration
 const RATE_LIMIT_MIN_MS = 2000 // Minimum 2 seconds
 const RATE_LIMIT_MAX_MS = 5000 // Maximum 5 seconds
-
-// Key benefit pages to scrape
-const BENEFIT_PAGE_PATHS = [
-  '/en-us/colleagues/benefits/medical',
-  '/en-us/colleagues/benefits/dental',
-  '/en-us/colleagues/benefits/vision',
-  '/en-us/colleagues/benefits/retirement',
-  '/en-us/colleagues/benefits/life-insurance',
-  '/en-us/colleagues/benefits/disability',
-  '/en-us/colleagues/benefits/flexible-spending',
-  '/en-us/colleagues/benefits/wellness',
-]
 
 // User-Agent rotation for politeness
 const USER_AGENTS = [
@@ -108,11 +111,11 @@ export async function closeBrowser(): Promise<void> {
 }
 
 /**
- * Extract clean content using OpenAI GPT-4 (with aggressive HTML reduction)
+ * Extract clean content using OpenAI GPT-4o-mini (with aggressive HTML reduction)
  */
 async function extractContentWithLLM(html: string, url: string): Promise<{ content: string; title: string }> {
   try {
-    console.log(`  Using GPT-4 to extract content from ${url}...`)
+    console.log(`  Using GPT-4o-mini to extract content from ${url}...`)
 
     // Strip scripts, styles, and non-content elements first
     const cleanedHtml = html
@@ -129,7 +132,7 @@ async function extractContentWithLLM(html: string, url: string): Promise<{ conte
       ? cleanedHtml.substring(0, maxHtmlLength) + '\n...[truncated]'
       : cleanedHtml
 
-    console.log(`  Sending ${truncatedHtml.length} chars to GPT-4 (original: ${html.length})`)
+    console.log(`  Sending ${truncatedHtml.length} chars to GPT-4o-mini (original: ${html.length})`)
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -156,11 +159,15 @@ Return a JSON object with:
 
     const result = JSON.parse(response.choices[0].message.content || '{}')
 
-    console.log(`  ✓ GPT-4 extracted content: ${result.title || 'Unknown'} (${result.content?.length || 0} chars)`)
+    // Ensure content is always a string
+    const content = typeof result.content === 'string' ? result.content : String(result.content || '')
+    const title = typeof result.title === 'string' ? result.title : String(result.title || 'Benefits Page')
+
+    console.log(`  ✓ GPT-4o-mini extracted content: ${title} (${content.length} chars)`)
 
     return {
-      title: result.title || 'Benefits Page',
-      content: result.content || '',
+      title,
+      content,
     }
   } catch (error) {
     console.error(`  Error in LLM extraction:`, error instanceof Error ? error.message : error)
@@ -180,14 +187,48 @@ async function scrapePage(url: string, retryCount = 0): Promise<ScrapedPage | nu
     const context = await getBrowserContext()
     page = await context.newPage()
 
+    // Set page timeout explicitly
+    page.setDefaultTimeout(SCRAPER_TIMEOUT)
+
     // Navigate to the page with timeout
     await page.goto(url, {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded', // Changed from 'networkidle' for faster loading
       timeout: SCRAPER_TIMEOUT,
     })
 
-    // Wait for main content to render
-    await page.waitForTimeout(2000) // Give JS time to render
+    // Wait a bit for JS to render
+    await page.waitForTimeout(2000)
+
+    // Handle common blocking dialogs (cookie consent, terms, etc.)
+    try {
+      // Look for "Agree", "Accept", "I Agree", "OK" buttons
+      const dialogSelectors = [
+        'button:has-text("Agree")',
+        'button:has-text("I Agree")',
+        'button:has-text("Accept")',
+        'button:has-text("Continue")',
+        'button:has-text("OK")',
+        '[data-testid="agree-button"]',
+        '[aria-label*="agree" i]',
+        '[aria-label*="accept" i]',
+      ]
+
+      for (const selector of dialogSelectors) {
+        const button = page.locator(selector).first()
+        if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
+          console.log(`  Found dialog button: ${selector}, clicking...`)
+          await button.click()
+          await page.waitForTimeout(1000) // Wait for dialog to close
+          break
+        }
+      }
+    } catch (dialogError) {
+      // Ignore dialog handling errors - page might not have dialogs
+      console.log(`  No dialogs found or error clicking: ${dialogError instanceof Error ? dialogError.message : 'unknown'}`)
+    }
+
+    // Wait for main content to render after dialog handling
+    await page.waitForTimeout(1000)
 
     // Extract page title
     const title = await page.title()
@@ -203,12 +244,13 @@ async function scrapePage(url: string, retryCount = 0): Promise<ScrapedPage | nu
     // Get the full HTML for LLM processing
     const html = await page.content()
 
-    // Use GPT-4 to extract clean content
+    // Use GPT-4o-mini to extract clean content
     const extracted = await extractContentWithLLM(html, url)
 
     // Validate content
     if (!extracted.content || extracted.content.length < 100) {
       console.log(`  Insufficient content found for ${url} (${extracted.content?.length || 0} chars)`)
+      await page.close()
       return null
     }
 
@@ -258,96 +300,218 @@ function getRandomDelay(): number {
 }
 
 /**
- * Get all benefit page URLs from the AmEx benefits site
+ * Normalize URL to avoid duplicates
  */
-async function getAllBenefitUrls(): Promise<string[]> {
+function normalizeUrl(url: string): string {
   try {
-    console.log('Discovering benefit pages...')
-
-    const urls = new Set<string>()
-    const baseUrl = 'https://www.americanexpress.com'
-
-    // Add predefined benefit pages
-    for (const path of BENEFIT_PAGE_PATHS) {
-      urls.add(new URL(path, baseUrl).toString())
+    const urlObj = new URL(url)
+    // Remove trailing slash, fragments, and common tracking params
+    urlObj.hash = ''
+    urlObj.search = ''
+    let normalized = urlObj.toString()
+    if (normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1)
     }
-
-    // Try to discover additional pages from the main benefits page
-    try {
-      const context = await getBrowserContext()
-      const page = await context.newPage()
-
-      await page.goto(AMEX_BENEFITS_URL, {
-        waitUntil: 'networkidle',
-        timeout: SCRAPER_TIMEOUT,
-      })
-
-      // Extract benefit links
-      const links = await page.$$eval('a[href*="benefits"]', (elements) =>
-        elements
-          .map(el => el.getAttribute('href'))
-          .filter(href => href && (href.includes('/benefits/') || href.includes('/colleagues/benefits/')))
-      ) as string[]
-
-      for (const href of links) {
-        try {
-          const absoluteUrl = new URL(href, baseUrl).toString()
-          if (absoluteUrl.includes('benefits')) {
-            urls.add(absoluteUrl)
-          }
-        } catch (e) {
-          // Skip invalid URLs
-        }
-      }
-
-      await page.close()
-    } catch (error) {
-      console.warn('Could not fetch additional benefit pages from index:', error instanceof Error ? error.message : error)
-    }
-
-    const urlArray = Array.from(urls)
-    console.log(`Discovered ${urlArray.length} benefit pages to crawl`)
-    return urlArray
-  } catch (error) {
-    console.error('Error discovering benefits pages:', error)
-    // Return predefined URLs as fallback
-    const baseUrl = 'https://www.americanexpress.com'
-    return BENEFIT_PAGE_PATHS.map(path => new URL(path, baseUrl).toString())
+    return normalized
+  } catch (e) {
+    return url
   }
 }
 
 /**
- * Crawl all benefit pages with rate limiting
+ * Check if URL should be crawled (benefits-related pages only)
  */
-export async function crawlBenefitsPages(): Promise<ScrapedPage[]> {
-  console.log('Starting benefits crawl with Playwright + GPT-4...')
+function shouldCrawlUrl(url: string, baseUrl: string): boolean {
+  try {
+    const urlObj = new URL(url)
+    const baseUrlObj = new URL(baseUrl)
+
+    // Must be same domain
+    if (urlObj.hostname !== baseUrlObj.hostname) {
+      return false
+    }
+
+    // Must contain benefits or colleagues in path
+    const path = urlObj.pathname.toLowerCase()
+    if (!path.includes('benefits') && !path.includes('colleagues')) {
+      return false
+    }
+
+    // Skip non-HTML resources
+    const skipExtensions = ['.pdf', '.jpg', '.png', '.gif', '.css', '.js', '.xml', '.zip']
+    if (skipExtensions.some(ext => path.endsWith(ext))) {
+      return false
+    }
+
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+/**
+ * Discover links on a page
+ */
+async function discoverLinks(page: Page, _currentUrl: string, baseUrl: string): Promise<Array<{ url: string; text: string }>> {
+  try {
+    const links = await page.$$eval('a[href]', (elements, baseUrl) => {
+      return elements
+        .map(el => {
+          const href = el.getAttribute('href')
+          const text = el.textContent?.trim() || ''
+          if (!href) return null
+
+          try {
+            // Convert relative URLs to absolute
+            const absoluteUrl = new URL(href, baseUrl)
+            return { url: absoluteUrl.toString(), text }
+          } catch (e) {
+            return null
+          }
+        })
+        .filter(link => link !== null) as Array<{ url: string; text: string }>
+    }, baseUrl)
+
+    // Filter to only benefits-related links
+    return links.filter(link => shouldCrawlUrl(link.url, baseUrl))
+  } catch (error) {
+    console.error('Error discovering links:', error)
+    return []
+  }
+}
+
+/**
+ * Crawl benefits pages using BFS (Breadth-First Search)
+ */
+export async function crawlBenefitsPages(): Promise<CrawlResult> {
+  console.log('Starting intelligent benefits crawl with BFS...')
+  console.log(`Max pages to crawl: ${MAX_PAGES_TO_CRAWL}`)
+
+  const pages: ScrapedPage[] = []
+  const navigationSteps: NavigationStep[] = []
+  const visited = new Set<string>()
+  const queue: Array<{ url: string; depth: number; parentUrl: string | null; linkText: string | null }> = []
 
   try {
-    const urls = await getAllBenefitUrls()
-    const pages: ScrapedPage[] = []
+    // Start from the base URL
+    const startUrl = normalizeUrl(AMEX_BENEFITS_URL)
+    queue.push({ url: startUrl, depth: 0, parentUrl: null, linkText: null })
 
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i]
-      const page = await scrapePage(url)
+    while (queue.length > 0 && pages.length < MAX_PAGES_TO_CRAWL) {
+      const current = queue.shift()!
+      const normalizedUrl = normalizeUrl(current.url)
 
-      if (page) {
-        pages.push(page)
+      // Skip if already visited
+      if (visited.has(normalizedUrl)) {
+        continue
       }
 
-      // Rate limiting (except for last page)
-      if (i < urls.length - 1) {
+      visited.add(normalizedUrl)
+
+      console.log(`\n[${pages.length + 1}/${MAX_PAGES_TO_CRAWL}] Visiting: ${current.url} (depth: ${current.depth})`)
+
+      // Record navigation step
+      const navStep: NavigationStep = {
+        url: current.url,
+        depth: current.depth,
+        parentUrl: current.parentUrl,
+        linkText: current.linkText,
+        visitedAt: new Date(),
+        scraped: false,
+      }
+
+      // Try to scrape the page
+      const scrapedPage = await scrapePage(current.url)
+
+      if (scrapedPage) {
+        pages.push(scrapedPage)
+        navStep.scraped = true
+        console.log(`  ✓ Successfully scraped (${pages.length}/${MAX_PAGES_TO_CRAWL})`)
+      } else {
+        console.log(`  ✗ Failed to scrape or insufficient content`)
+      }
+
+      navigationSteps.push(navStep)
+
+      // Discover new links if we haven't reached the page limit
+      if (pages.length < MAX_PAGES_TO_CRAWL) {
+        try {
+          const context = await getBrowserContext()
+          const page = await context.newPage()
+
+          // Set page timeout
+          page.setDefaultTimeout(SCRAPER_TIMEOUT)
+
+          await page.goto(current.url, {
+            waitUntil: 'domcontentloaded',
+            timeout: SCRAPER_TIMEOUT,
+          })
+
+          await page.waitForTimeout(1000)
+
+          // Handle dialogs before discovering links
+          try {
+            const dialogSelectors = [
+              'button:has-text("Agree")',
+              'button:has-text("I Agree")',
+              'button:has-text("Accept")',
+              'button:has-text("Continue")',
+              'button:has-text("OK")',
+            ]
+
+            for (const selector of dialogSelectors) {
+              const button = page.locator(selector).first()
+              if (await button.isVisible({ timeout: 1000 }).catch(() => false)) {
+                await button.click()
+                await page.waitForTimeout(500)
+                break
+              }
+            }
+          } catch {
+            // Ignore dialog errors
+          }
+
+          const discoveredLinks = await discoverLinks(page, current.url, AMEX_BENEFITS_URL)
+          await page.close()
+
+          console.log(`  Found ${discoveredLinks.length} benefit-related links`)
+
+          // Add discovered links to queue
+          for (const link of discoveredLinks) {
+            const normalizedLinkUrl = normalizeUrl(link.url)
+            if (!visited.has(normalizedLinkUrl) && !queue.some(q => normalizeUrl(q.url) === normalizedLinkUrl)) {
+              queue.push({
+                url: link.url,
+                depth: current.depth + 1,
+                parentUrl: current.url,
+                linkText: link.text.substring(0, 200), // Limit text length
+              })
+            }
+          }
+
+          console.log(`  Queue size: ${queue.length}, Visited: ${visited.size}`)
+        } catch (error) {
+          console.error('  Error discovering links:', error instanceof Error ? error.message : error)
+        }
+      }
+
+      // Rate limiting between pages
+      if (queue.length > 0) {
         const delay = getRandomDelay()
-        console.log(`  Waiting ${delay}ms before next request...`)
+        console.log(`  Waiting ${delay}ms before next page...`)
         await new Promise(resolve => setTimeout(resolve, delay))
       }
     }
 
-    console.log(`Successfully crawled ${pages.length} pages`)
+    console.log(`\n✓ Crawl completed: ${pages.length} pages scraped, ${navigationSteps.length} steps taken`)
 
     // Cleanup browser after crawl
     await closeBrowser()
 
-    return pages
+    return {
+      pages,
+      navigationSteps,
+    }
   } catch (error) {
     console.error('Error in crawlBenefitsPages:', error)
     await closeBrowser()

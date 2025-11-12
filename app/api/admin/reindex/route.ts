@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { reindexContent, getReindexStatus } from '@/lib/indexer'
+import { reindexContent } from '@/lib/indexer'
 
 /**
  * POST /api/admin/reindex
@@ -37,6 +37,8 @@ export async function POST(request: NextRequest) {
           chunksCreated: result.chunksCreated,
           embeddingsGenerated: result.embeddingsGenerated,
           duration: result.duration,
+          crawlSessionId: result.crawlSessionId,
+          navigationSteps: result.navigationSteps,
           status: 'success',
         },
       },

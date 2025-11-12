@@ -94,6 +94,12 @@ function isSubstantialChunk(chunk: string): boolean {
  * Clean and normalize text
  */
 function normalizeText(text: string): string {
+  // Handle non-string input gracefully
+  if (typeof text !== 'string') {
+    console.warn('normalizeText received non-string input:', typeof text, text)
+    return String(text || '')
+  }
+
   return text
     .replace(/\s+/g, ' ') // Normalize whitespace
     .replace(/\n+/g, ' ') // Remove newlines
