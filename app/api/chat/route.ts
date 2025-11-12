@@ -40,11 +40,15 @@ export async function POST(request: NextRequest) {
     // Step 1: Search for relevant chunks (retrieve more candidates)
     const allResults = await searchChunks(message, 10)
 
-    // Step 2: Filter by similarity threshold to remove noise
+    // Step 2: Adaptive filtering - only filter if we have enough high-quality results
     const filteredResults = filterByThreshold(allResults, 0.5)
 
-    // Step 3: Take top 5 after filtering
-    const searchResults = filteredResults.slice(0, 5)
+    // If filtering leaves us with < 3 chunks, use unfiltered results instead
+    const resultsToUse = filteredResults.length >= 3 ? filteredResults : allResults
+    const filteringApplied = filteredResults.length >= 3
+
+    // Step 3: Take top 5 from our selected results
+    const searchResults = resultsToUse.slice(0, 5)
 
     // Step 4: Calculate confidence using MAXIMUM similarity (not average)
     // This prevents good matches from being hidden by poor average
@@ -52,7 +56,9 @@ export async function POST(request: NextRequest) {
       ? Math.max(...searchResults.map(r => r.similarity))
       : 0
 
-    console.log(`Using ${searchResults.length} chunks (filtered from ${allResults.length}) with max similarity: ${confidence.toFixed(3)}`)
+    console.log(
+      `Using ${searchResults.length} chunks (${filteringApplied ? 'filtered' : 'unfiltered'} from ${allResults.length}) with max similarity: ${confidence.toFixed(3)}`
+    )
 
     // Step 5: Generate response using LLM
     const response = await generateResponse(message, searchResults, confidence)
